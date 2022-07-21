@@ -2,7 +2,7 @@
 Official implementation for our ECCV 2022 paper "DecoupleNet: Decoupled Network for Domain Adaptive Semantic Segmentation" [[arXiv](https://arxiv.org/pdf/2207.09988.pdf)]
 
 <div align="center">
-  <img src="figs/fig.pdf"/>
+  <img src="figs/fig.png"/>
 </div>
 
 # Get Started
@@ -25,7 +25,7 @@ wget https://download.pytorch.org/models/resnet101-5d3b4d8f.pth
 
 First-phase training:
 ```
-python3 train_phase1.py --snapshot-dir ./snapshots/phase1_reproduce --batch-size 8 --gpus 0,1,2,3 --dist --tensorboard --batch_size_val 4 --src_rootpath [YOUR_SOURCE_DATA_ROOT] --tgt_rootpath [YOUR_TARGET_DATA_ROOT]
+python3 train_phase1.py --snapshot-dir ./snapshots/phase1 --batch-size 8 --gpus 0,1,2,3 --dist --tensorboard --batch_size_val 4 --src_rootpath [YOUR_SOURCE_DATA_ROOT] --tgt_rootpath [YOUR_TARGET_DATA_ROOT]
 ```
 
 Second-phase training:
