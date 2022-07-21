@@ -1,0 +1,17 @@
+snapshots/
+*.pth
+*__pycache__*
+debug/
+class_balance_ids_*.p
+core.*
+datasets/pseudo_labels*/
+datasets/soft_labels*/
+output/
+check.py
+data/class_balance_ids_*.p
+data/cityscapes_class_balance_ids_*.p
+*.pickle
+*/*.zip
+*/*.npy
+slurm_cmd/
+pretrained/
