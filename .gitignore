@@ -15,3 +15,4 @@ data/cityscapes_class_balance_ids_*.p
 */*.npy
 slurm_cmd/
 pretrained/
+*_soft_labels/

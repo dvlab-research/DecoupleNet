@@ -133,46 +133,16 @@ def get_arguments():
     parser.add_argument('--noshuffle', action='store_true', help='do not use shuffle')
     parser.add_argument('--no_droplast', action='store_true')
     parser.add_argument('--pseudo_labels_folder', type=str, default='')
-    parser.add_argument('--soft_labels_folder', type=str, default='')
-    parser.add_argument('--src_loss_weight', type=float, default=1.0, help='loss weight for source domain loss')
-    parser.add_argument('--thresholds_path', type=str, default="avg", help='avg | pred_only | fix_only')
-    
     parser.add_argument("--batch_size_val", type=int, default=4, help='batch_size for validation')
     parser.add_argument("--resume", type=str, default=RESUME, help='resume weight')
     parser.add_argument("--freeze_bn", action="store_true", help="augmentation")
     parser.add_argument("--hidden_dim", type=int, default=128, help='number of selected negative samples')
     parser.add_argument("--layer", type=int, default=1, help='separate from which layer')
+    parser.add_argument("--output_folder", type=str, default="", help='output folder')
     return parser.parse_args()
 
 
 args = get_arguments()
-
-
-def soft_label_cross_entropy(pred, soft_label, pixel_weights=None):
-    N, C, H, W = pred.shape
-    loss = -soft_label.float()*F.log_softmax(pred, dim=1)
-    if pixel_weights is None:
-        return torch.mean(torch.sum(loss, dim=1))
-    return torch.mean(pixel_weights*torch.sum(loss, dim=1))
-
-
-def lr_poly(base_lr, iter, max_iter, power):
-    return base_lr * ((1 - float(iter) / max_iter) ** (power))
-
-
-def adjust_learning_rate(optimizer, i_iter):
-    lr = lr_poly(args.learning_rate, i_iter, args.num_steps, args.power)
-    optimizer.param_groups[0]['lr'] = lr
-    if len(optimizer.param_groups) > 1:
-        optimizer.param_groups[1]['lr'] = lr * 10
-
-
-def adjust_learning_rate_D(optimizer, i_iter):
-    lr = lr_poly(args.learning_rate_D, i_iter, args.num_steps, args.power)
-    optimizer.param_groups[0]['lr'] = lr
-    if len(optimizer.param_groups) > 1:
-        optimizer.param_groups[1]['lr'] = lr * 10
-
 
 def main_worker(gpu, world_size, dist_url):
     """Create the model and start the training."""
@@ -214,7 +184,6 @@ def main_worker(gpu, world_size, dist_url):
         logger.info("args.batch_size: {}, args.batch_size_val: {}".format(args.batch_size, args.batch_size_val))
 
     device = torch.device("cuda" if not args.cpu else "cpu")
-
     args.world_size = world_size
 
     if gpu == 0:
@@ -232,6 +201,7 @@ def main_worker(gpu, world_size, dist_url):
             model_B_weights = resume_weight['model_B_state_dict']
             head_weights = resume_weight['head_state_dict']
             classifier_weights = resume_weight['classifier_state_dict']
+            # feature_extractor_weights = {k.replace("module.", ""):v for k,v in feature_extractor_weights.items()}
             model_B2_weights = {k.replace("module.", ""):v for k,v in model_B2_weights.items()}
             model_B_weights = {k.replace("module.", ""):v for k,v in model_B_weights.items()}
             head_weights = {k.replace("module.", ""):v for k,v in head_weights.items()}
@@ -239,7 +209,6 @@ def main_worker(gpu, world_size, dist_url):
 
         if gpu == 0:
             logger.info("freeze_bn: {}".format(args.freeze_bn))
-
         model = resnet_feature_extractor('resnet101', 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', freeze_bn=args.freeze_bn)
 
         if args.layer == 0:
@@ -287,13 +256,7 @@ def main_worker(gpu, world_size, dist_url):
     sourceloader_iter = enumerate(datasets.source_train_loader)
     targetloader_iter = enumerate(datasets.target_train_loader)
 
-    # define optimizer
-    model_params = [{'params': list(model_B2.parameters()) + list(model_B.parameters())},
-                    {'params': list(head.parameters()) + list(classifier.parameters()), 'lr': args.learning_rate * 10}]
-    optimizer = optim.SGD(model_params, lr=args.learning_rate, momentum=args.momentum, weight_decay=args.weight_decay)
-    assert len(optimizer.param_groups) == 2
-    optimizer.zero_grad()
-
+    # define model
     model_B2 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_B2)
     model_B2 = torch.nn.parallel.DistributedDataParallel(model_B2.cuda(), device_ids=[gpu], find_unused_parameters=True)
 
@@ -306,7 +269,6 @@ def main_worker(gpu, world_size, dist_url):
     classifier = torch.nn.SyncBatchNorm.convert_sync_batchnorm(classifier)
     classifier = torch.nn.parallel.DistributedDataParallel(classifier.cuda(), device_ids=[gpu], find_unused_parameters=True)
     seg_loss = torch.nn.CrossEntropyLoss(ignore_index=args.ignore_label)
-
     interp = nn.Upsample(size=(args.rcrop[1], args.rcrop[0]), mode='bilinear', align_corners=True)
     interp_target = nn.Upsample(size=(args.rcrop[1], args.rcrop[0]), mode='bilinear', align_corners=True)
 
@@ -317,199 +279,11 @@ def main_worker(gpu, world_size, dist_url):
     # set up tensor board
     if args.tensorboard and gpu == 0:
         writer = SummaryWriter(args.snapshot_dir)
-
-    # # Uncomment the following two lines for testing
-    # validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger if gpu == 0 else None, datasets.target_valid_loader)
+        
+    validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger if gpu == 0 else None, datasets.target_train_loader, args.output_folder)
     # exit()
 
-    thresholds = np.load(args.thresholds_path)
-    class_list = ["road","sidewalk","building","wall",
-                    "fence","pole","traffic_light","traffic_sign","vegetation",
-                    "terrain","sky","person","rider","car",
-                    "truck","bus","train","motorcycle","bicycle"]
-    if gpu == 0:
-        logger.info('successfully load class-wise thresholds from {}'.format(args.thresholds_path))
-        for c in range(len(class_list)):
-            logger.info("class {}: {}, threshold: {}".format(c, class_list[c], thresholds[c]))
-    thresholds = torch.from_numpy(thresholds).cuda()
-
-    scaler = torch.cuda.amp.GradScaler()
-    best_miou = 0.0
-    filename = None
-    epoch_s, epoch_t = 0, 0
-    for i_iter in range(args.num_steps):
-
-        model_B2.train()
-        model_B.train()
-        head.train()
-        classifier.train()
-
-        loss_seg_value = 0
-        loss_src_seg_value = 0
-
-        optimizer.zero_grad()
-        adjust_learning_rate(optimizer, i_iter)
-
-        for sub_i in range(args.iter_size):
-
-            # train with source
-            try:
-                _, batch = sourceloader_iter.__next__()
-            except StopIteration:
-                epoch_s += 1
-                datasets.source_train_sampler.set_epoch(epoch_s)
-                sourceloader_iter = enumerate(datasets.source_train_loader)
-                _, batch = sourceloader_iter.__next__()
-                
-            images = batch['img'].cuda()
-            labels = batch['label'].cuda()
-            src_size = images.shape[-2:]
-
-            with torch.cuda.amp.autocast():
-
-                feat_src = model_B2(images)
-                feat_B_src = model_B(feat_src)
-                pred = classifier(head(feat_B_src))
-                pred = interp(pred) #[b, num_classes, h, w]
-
-                loss_seg = seg_loss(pred, labels)
-                
-                loss = loss_seg
-
-                # proper normalization
-                loss = args.src_loss_weight * loss / args.iter_size
-                loss_src_seg_value += loss_seg / args.iter_size
-                
-            scaler.scale(loss).backward()
-
-            # train with target
-            try:
-                _, batch = targetloader_iter.__next__()
-            except StopIteration:
-                epoch_t += 1
-                datasets.target_train_sampler.set_epoch(epoch_t)
-                targetloader_iter = enumerate(datasets.target_train_loader)
-                _, batch = targetloader_iter.__next__()
-                
-            images = batch['img'].cuda()
-            soft_labels = batch['lpsoft'].cuda()
-            tgt_size = images.shape[-2:]
-
-            with torch.no_grad():
-
-                
-                soft_labels = F.softmax(soft_labels, 1)
-
-                
-                images_full = batch['img_full'].cuda()
-                weak_params = batch['weak_params']
-                resize_params = weak_params['RandomSized']
-                crop_params = weak_params['RandomCrop']
-                flip_params = weak_params['RandomHorizontallyFlip']
-                # print("resize_params: ", resize_params)
-                # print("crop_params: ", crop_params)
-                # print("flip_params: ", flip_params)
-                with torch.cuda.amp.autocast():
-                    with torch.no_grad():
-                        pred_full = F.softmax(interp(classifier(head(model_B(model_B2(images_full))))), 1)
-                        
-                        # print("v1 pred_full.min(): {}, pred_full.max(): {}, pred_full.mean(): {}".format(pred_full.min(), pred_full.max(), pred_full.mean()))
-
-                        pred_labels = []
-                        for b in range(pred_full.shape[0]):
-                            # restore pred_full to crop
-                            # 1.Resize
-                            h, w = resize_params[0][b], resize_params[1][b]
-                            pred_resize_b = F.interpolate(pred_full[b].unsqueeze(0), size=(h, w), mode='bilinear', align_corners=True)[0]
-                            # 2.Crop
-                            ys, ye, xs, xe = crop_params[0][b], crop_params[1][b], crop_params[2][b], crop_params[3][b]
-                            pred_crop_b = pred_resize_b[:, ys:ye, xs:xe]
-                            # 3.Flip
-                            if flip_params[b]:
-                                pred_crop_b = torch.flip(pred_crop_b, dims=(2,)) #[c, h, w]
-                            pred_labels.append(pred_crop_b)
-                        pred_labels = torch.stack(pred_labels, 0)
-                        assert pred_labels.shape[-2:] == tgt_size
-                pseudo_labels = (pred_labels + soft_labels) / 2.0
-
-
-            with torch.cuda.amp.autocast():
-                feat_tgt = model_B2(images)
-                feat_B_tgt = model_B(feat_tgt)
-                pred = classifier(head(feat_B_tgt))
-                pred = interp(pred) #[b, num_classes, h, w]
-
-                conf, pseudo_labels = pseudo_labels.max(1) #[b, h, w]
-
-                pseudo_labels[conf < thresholds[pseudo_labels]] = args.ignore_label
-                pseudo_labels = pseudo_labels.detach()
-                loss_seg = seg_loss(pred, pseudo_labels)
-                
-                loss = loss_seg
-
-                # proper normalization
-                loss = loss / args.iter_size
-                loss_seg_value += loss_seg / args.iter_size
-                
-            scaler.scale(loss).backward()
-
-        n = torch.tensor(1.0).cuda()
-
-        dist.all_reduce(n), dist.all_reduce(loss_seg_value),  dist.all_reduce(loss_src_seg_value)
-        
-        loss_seg_value = loss_seg_value.item() / n.item()
-        loss_src_seg_value = loss_src_seg_value.item() / n.item()
-        
-        scaler.step(optimizer)
-        scaler.update()
-        
-        if args.tensorboard and gpu == 0:
-            scalar_info = {
-                'loss_seg': loss_seg_value,
-                'loss_src_seg': loss_src_seg_value,
-            }
-
-            if i_iter % 10 == 0:
-                for key, val in scalar_info.items():
-                    writer.add_scalar(key, val, i_iter)
-
-        if gpu == 0 and i_iter % args.print_every == 0:
-            logger.info('iter = {0:8d}/{1:8d}, loss_seg = {2:.3f}, loss_src_seg = {3:.3f}'.format(i_iter, args.num_steps, loss_seg_value, loss_src_seg_value))
-        
-        if gpu == 0 and i_iter >= args.num_steps_stop - 1:
-            logger.info('save model ...')
-            filename = osp.join(args.snapshot_dir, 'GTA5_' + str(args.num_steps_stop) + '.pth')
-            save_file = {'model_B2_state_dict': model_B2.state_dict(), 'model_B_state_dict': model_B.state_dict(), \
-                'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
-            torch.save(save_file, filename)
-            logger.info("saving checkpoint model to {}".format(filename))
-            break
-
-        if i_iter % args.save_pred_every == 0 and i_iter != 0:
-            miou, loss_val = validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger if gpu == 0 else None, datasets.target_valid_loader)
-            if args.tensorboard and gpu == 0:
-                scalar_info = {
-                    'miou_val': miou,
-                    'loss_val': loss_val
-                }
-                for k, v in scalar_info.items():
-                    writer.add_scalar(k, v, i_iter)
-
-            if gpu == 0 and miou > best_miou:
-                best_miou = miou
-                logger.info('taking snapshot ...')
-                if filename is not None and os.path.exists(filename):
-                    os.remove(filename)
-                filename = osp.join(args.snapshot_dir, 'GTA5_' + str(i_iter) + "_{}".format(miou) + '.pth')
-                save_file = {'model_B2_state_dict': model_B2.state_dict(), 'model_B_state_dict': model_B.state_dict(), \
-                    'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
-                torch.save(save_file, filename)
-                logger.info("saving checkpoint model to {}".format(filename))
-                
-    if args.tensorboard and gpu == 0:
-        writer.close()
-
-def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloader):
+def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloader, output_folder):
     if gpu == 0:
         logger.info("Start Evaluation")
     # evaluate
@@ -524,15 +298,25 @@ def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloa
 
     with torch.no_grad():
         for i, batch in enumerate(testloader):
-            images = batch["img"].cuda()
-            labels = batch["label"].cuda()
+            images = batch["img_full"].cuda()
+            labels = batch["lbl_full"].cuda()
+            img_paths = batch['img_path']
 
             pred = model_B(model_B2(images))
             pred = classifier(head(pred))
             output = F.interpolate(pred, size=labels.size()[-2:], mode='bilinear', align_corners=True)
             loss = seg_loss(output, labels)
             
-            output = output.max(1)[1]
+            output = F.softmax(output, 1)
+
+            output_np = pred.detach().cpu().numpy().squeeze()
+
+            logits, output = output.max(1)
+
+            for b in range(output_np.shape[0]):
+                mask_filename = img_paths[b].split("/")[-1].split(".")[0]
+                np.save(os.path.join(output_folder, mask_filename+".npy"), output_np[b])
+
             intersection, union, _ = intersectionAndUnionGPU(output, labels, args.num_classes, args.ignore_label)
             dist.all_reduce(intersection), dist.all_reduce(union)
             intersection, union = intersection.cpu().numpy(), union.cpu().numpy()
@@ -542,7 +326,6 @@ def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloa
                 logger.info("Evaluation iter = {0:5d}/{1:5d}, loss_eval = {2:.3f}".format(
                     i, len(testloader), loss_meter.val
                 ))
-
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     miou = np.mean(iou_class)
     if gpu == 0:
@@ -550,8 +333,6 @@ def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloa
         for i in range(args.num_classes):
             logger.info("Class_{} Result: iou = {:.3f}".format(i, iou_class[i]))
         logger.info("End Evaluation")
-
-    torch.cuda.empty_cache()
 
     return miou, loss_meter.avg
 
@@ -568,6 +349,9 @@ def find_free_port():
 if __name__ == '__main__':
     args.gpus = [int(x) for x in args.gpus.split(",")]
     args.world_size = len(args.gpus)
+
+    os.makedirs(args.output_folder, exist_ok=True)
+
     if args.dist:
         port = find_free_port()
         args.dist_url = f"tcp://127.0.0.1:{port}" 
