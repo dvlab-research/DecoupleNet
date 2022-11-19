@@ -12,30 +12,30 @@ Official implementation for our ECCV 2022 paper "DecoupleNet: Decoupled Network 
 ### GTA5
 First, download GTA5 from the [website](https://download.visinf.tu-darmstadt.de/data/from_games/). Then, extract them and organize as follows.
 ```
---- images/
------- 00000.png
------- 00001.png
------- ...
---- labels/
------- 00000.png
------- 00001.png
------- ...
---- split.mat
---- gtav_label_info.p
+images/
+|---00000.png
+|---00001.png
+|---...
+labels/
+|--- 00000.png
+|--- 00001.png
+|--- ...
+split.mat
+gtav_label_info.p
 ```
 
 ### Cityscapes
 
 Download Cityscapes dataset from the [website](https://www.cityscapes-dataset.com/). And organize them as 
 ```
---- leftImg8bit/
------- train/
------- val/
------- test/
---- gtFine
------- train/
------- val/
------- test/
+leftImg8bit/
+|---train/
+|---val/
+|---test/
+gtFine
+|---train/
+|---val/
+|---test/
 ```
 
 ## Training
