@@ -1,5 +1,5 @@
 # DecoupleNet
-Official implementation for our ECCV 2022 paper "DecoupleNet: Decoupled Network for Domain Adaptive Semantic Segmentation" [[arXiv](https://arxiv.org/pdf/2207.09988.pdf)]
+Official implementation for our ECCV 2022 paper "DecoupleNet: Decoupled Network for Domain Adaptive Semantic Segmentation" [[arXiv](https://arxiv.org/pdf/2207.09988.pdf)] [[Paper](https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136930362.pdf)]
 
 <div align="center">
   <img src="figs/fig.png"/>
