@@ -17,9 +17,9 @@ images/
 |---00001.png
 |---...
 labels/
-|--- 00000.png
-|--- 00001.png
-|--- ...
+|---00000.png
+|---00001.png
+|---...
 split.mat
 gtav_label_info.p
 ```
