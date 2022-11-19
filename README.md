@@ -58,7 +58,7 @@ Second-phase training (The trained phase1 model can also be downloaded from [her
 # First generate the soft pesudo labels from the trained phase1 model
 python3 generate_soft_label.py --snapshot-dir ./snapshots/GTA2Cityscapes_generate_soft_labels --batch-size 8 --gpus 0,1,2,3 --dist --tensorboard --batch_size_val 4 --resume [PATH_OF_PHASE1_MODEL] --output_folder ./datasets/gta2city_soft_labels --no_droplast --src_rootpath [YOUR_SOURCE_DATA_ROOT] --tgt_rootpath [YOUR_TARGET_DATA_ROOT]
 
-# Then, get the thresholds from the generated soft labels:
+# Then, get the thresholds from the generated soft labels: 
 cd datasets/ && python3 get_thresholds.py 0.8 gta2city_soft_labels
 
 # Training with soft pseudo labels:
