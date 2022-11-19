@@ -62,7 +62,7 @@ python3 generate_soft_label.py --snapshot-dir ./snapshots/GTA2Cityscapes_generat
 cd datasets/ && python3 get_thresholds.py 0.8 gta2city_soft_labels
 
 # Training with soft pseudo labels:
-python3 train_phase2.py --snapshot-dir ./snapshots/GTA2Cityscapes_phase2 --batch-size 8 --gpus 0,1,2,3 --dist --tensorboard --learning-rate 5e-4 --batch_size_val 4 --layer 1 --soft_labels_folder ./datasets/gta2city_soft_labels --resume [PATH_OF_PHASE1_MODEL] --thresholds_path ./datasets/gta2city_soft_labels_thresholds_p0.8.npy --src_rootpath [YOUR_SOURCE_DATA_ROOT] --tgt_rootpath [YOUR_TARGET_DATA_ROOT]
+python3 train_phase2.py --snapshot-dir ./snapshots/GTA2Cityscapes_phase2 --batch-size 8 --gpus 0,1,2,3 --dist --tensorboard --learning-rate 5e-4 --batch_size_val 4 --soft_labels_folder ./datasets/gta2city_soft_labels --resume [PATH_OF_PHASE1_MODEL] --thresholds_path ./datasets/gta2city_soft_labels_thresholds_p0.8.npy --src_rootpath [YOUR_SOURCE_DATA_ROOT] --tgt_rootpath [YOUR_TARGET_DATA_ROOT]
 ```
 
 # Acknowledgement
