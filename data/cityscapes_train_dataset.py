@@ -91,7 +91,7 @@ class Cityscapes_train_loader(BaseDataset):
         self.paired_files = {}
 
         if logger is not None:
-            logger.info("use cityscapes_pseudo_v2_dataset. with clrjit. with pseudo_labels_folder set to {}".format(opt.pseudo_labels_folder))
+            logger.info("pseudo_labels_folder set to {}".format(opt.pseudo_labels_folder))
 
         self.images_base = os.path.join(self.root, "leftImg8bit", self.split)
         self.annotations_base = os.path.join(opt.pseudo_labels_folder)
@@ -166,7 +166,7 @@ class Cityscapes_train_loader(BaseDataset):
         lbl_full = lbl.copy()
 
         lp, lpsoft, weak_params = None, None, None
-        if self.split == 'train' and self.opt.used_save_pseudo:
+        if self.split == 'train' and hasattr(self.opt, "soft_labels_folder"):
             lpsoft = np.load(os.path.join(self.opt.soft_labels_folder, os.path.basename(img_path).replace('.png', '.npy')))
 
         input_dict = {}

@@ -163,18 +163,6 @@ class Cityscapes_val_loader(BaseDataset):
         lbl_full = lbl.copy()
 
         lp, lpsoft, weak_params = None, None, None
-        if self.split == 'train' and self.opt.used_save_pseudo:
-            if self.opt.proto_rectify:
-                lpsoft = np.load(os.path.join(self.opt.path_soft, os.path.basename(img_path).replace('.png', '.npy')))
-            else:
-                lp_path = os.path.join(self.opt.path_LP, os.path.basename(img_path))
-                lp = Image.open(lp_path)
-                lp = lp.resize(self.img_size, Image.NEAREST)
-                lp = np.array(lp, dtype=np.uint8)
-                if self.opt.threshold:
-                    conf = np.load(os.path.join(self.opt.path_LP, os.path.basename(img_path).replace('.png', '_conf.npy')))
-                    lp[conf <= self.opt.threshold] = 250
-
         input_dict = {}
         if self.augmentations!=None:
             img, lbl, lp, lpsoft, weak_params = self.augmentations(img, lbl, lp, lpsoft)

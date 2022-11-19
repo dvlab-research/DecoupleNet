@@ -36,11 +36,11 @@ IGNORE_LABEL = 250
 LEARNING_RATE = 2.5e-4
 MOMENTUM = 0.9
 NUM_CLASSES = 19
-NUM_STEPS = 93750
-NUM_STEPS_STOP = 60000 # early stopping
+NUM_STEPS = 62500
+NUM_STEPS_STOP = 40000 # early stopping
 POWER = 0.9
 RANDOM_SEED = 1234
-RESUME = './pretrained/sourceonly.pth' 
+RESUME = './pretrained/model_phase1.pth' #'DeepLab_resnet_pretrained_init-f81d91e8.pth' #'http://vllab.ucmerced.edu/ytsai/CVPR18/DeepLab_resnet_pretrained_init-f81d91e8.pth'
 SAVE_NUM_IMAGES = 2
 SAVE_PRED_EVERY = 1000
 SNAPSHOT_DIR = './snapshots/'
@@ -51,7 +51,6 @@ LEARNING_RATE_D = 1e-4
 LAMBDA_SEG = 0.1
 LAMBDA_ADV_TARGET1 = 0.0002
 LAMBDA_ADV_TARGET2 = 0.001
-GAN = 'LS' #'Vanilla'
 
 SET = 'train'
 
@@ -116,8 +115,6 @@ def get_arguments():
                         help="Path to the directory of log.")
     parser.add_argument("--set", type=str, default=SET,
                         help="choose adaptation set.")
-    parser.add_argument("--gan", type=str, default=GAN,
-                        help="choose the GAN objective.")
     parser.add_argument("--gpus", type=str, default="0,1", help="selected gpus")
     parser.add_argument("--dist", action="store_true", help="DDP")
     parser.add_argument("--ngpus_per_node", type=int, default=1, help='number of gpus in each node')
@@ -128,7 +125,7 @@ def get_arguments():
     parser.add_argument("--tgt_val_dataset", type=str, default="cityscapes_val", help='training target dataset')
     parser.add_argument("--noaug", action="store_true", help="augmentation")
     parser.add_argument('--resize', type=int, default=2200, help='resize long size')
-    parser.add_argument("--clrjit_params", type=str, default="0.0,0.0,0.0,0.0", help='brightness,contrast,saturation,hue')
+    parser.add_argument("--clrjit_params", type=str, default="0.5,0.5,0.5,0.2", help='brightness,contrast,saturation,hue')
     parser.add_argument('--rcrop', type=str, default='896,512', help='rondom crop size')
     parser.add_argument('--hflip', type=float, default=0.5, help='random flip probility')
     parser.add_argument('--src_rootpath', type=str, default='datasets/gta5')
@@ -136,17 +133,15 @@ def get_arguments():
     parser.add_argument('--noshuffle', action='store_true', help='do not use shuffle')
     parser.add_argument('--no_droplast', action='store_true')
     parser.add_argument('--pseudo_labels_folder', type=str, default='')
-    parser.add_argument('--conf_bank_length', type=int, default=100000)
-    parser.add_argument('--conf_p', type=float, default=0.8)
+    parser.add_argument('--soft_labels_folder', type=str, default='')
+    parser.add_argument('--src_loss_weight', type=float, default=1.0, help='loss weight for source domain loss')
+    parser.add_argument('--thresholds_path', type=str, default="avg", help='avg | pred_only | fix_only')
     
     parser.add_argument("--batch_size_val", type=int, default=4, help='batch_size for validation')
-    parser.add_argument("--resume", type=str, default=RESUME, help='resume weight')
+    parser.add_argument("--resume", type=str, default="", help='resume weight')
     parser.add_argument("--freeze_bn", action="store_true", help="augmentation")
-    parser.add_argument("--lambda_adv_src", type=float, default=0.1, help='weight for loss_adv_src')
-    parser.add_argument("--lambda_adv_tgt", type=float, default=0.01, help='weight for loss_adv_tgt')
     parser.add_argument("--hidden_dim", type=int, default=128, help='number of selected negative samples')
     parser.add_argument("--layer", type=int, default=1, help='separate from which layer')
-    parser.add_argument("--lambda_st", type=float, default=0.1, help='weight for loss_st')
     return parser.parse_args()
 
 
@@ -229,23 +224,23 @@ def main_worker(gpu, world_size, dist_url):
 
     # Create network
     if args.model == 'DeepLab':
-
         if args.resume:
             resume_weight = torch.load(args.resume, map_location='cpu')
             print("args.resume: ", args.resume)
-            feature_extractor_weights = resume_weight['model_state_dict']
+            # feature_extractor_weights = resume_weight['model_state_dict']
+            model_B2_weights = resume_weight['model_B2_state_dict']
+            model_B_weights = resume_weight['model_B_state_dict']
             head_weights = resume_weight['head_state_dict']
             classifier_weights = resume_weight['classifier_state_dict']
-            feature_extractor_weights = {k.replace("module.", ""):v for k,v in feature_extractor_weights.items()}
+            model_B2_weights = {k.replace("module.", ""):v for k,v in model_B2_weights.items()}
+            model_B_weights = {k.replace("module.", ""):v for k,v in model_B_weights.items()}
             head_weights = {k.replace("module.", ""):v for k,v in head_weights.items()}
             classifier_weights = {k.replace("module.", ""):v for k,v in classifier_weights.items()}
 
         if gpu == 0:
             logger.info("freeze_bn: {}".format(args.freeze_bn))
         model = resnet_feature_extractor('resnet101', 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', freeze_bn=args.freeze_bn)
-        if args.resume:
-            model.load_state_dict(feature_extractor_weights)
-        
+
         if args.layer == 0:
             model_B1 = nn.Sequential(model.backbone.conv1, model.backbone.bn1, model.backbone.relu, model.backbone.maxpool)
         elif args.layer == 1:
@@ -253,10 +248,11 @@ def main_worker(gpu, world_size, dist_url):
         elif args.layer == 2:
             model_B1 = nn.Sequential(model.backbone.conv1, model.backbone.bn1, model.backbone.relu, model.backbone.maxpool, model.backbone.layer1, model.backbone.layer2)
 
-        model = resnet_feature_extractor('resnet101', 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', freeze_bn=args.freeze_bn)
         if args.resume:
-            model.load_state_dict(feature_extractor_weights)
-        
+            model_B1.load_state_dict(model_B2_weights)
+
+        model = resnet_feature_extractor('resnet101', 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', freeze_bn=args.freeze_bn)
+
         if args.layer == 0:
             ndf = 64
             model_B2 = nn.Sequential(model.backbone.conv1, model.backbone.bn1, model.backbone.relu, model.backbone.maxpool)
@@ -270,6 +266,10 @@ def main_worker(gpu, world_size, dist_url):
             model_B2 = nn.Sequential(model.backbone.conv1, model.backbone.bn1, model.backbone.relu, model.backbone.maxpool, model.backbone.layer1, model.backbone.layer2)
             model_B = nn.Sequential(model.backbone.layer3, model.backbone.layer4)
         
+        if args.resume:
+            model_B2.load_state_dict(model_B2_weights)
+            model_B.load_state_dict(model_B_weights)
+
         model_D1 = FCDiscriminator(ndf, ndf=32)
         model_D2 = FCDiscriminator(args.num_classes, ndf=64)
 
@@ -278,31 +278,18 @@ def main_worker(gpu, world_size, dist_url):
         if args.resume:
             head.load_state_dict(head_weights)
             classifier.load_state_dict(classifier_weights)
-        
-        aux_classifier = ASPP_Classifier_Gen(2048, [6, 12, 18, 24], [6, 12, 18, 24], args.num_classes, hidden_dim=args.hidden_dim)
-        _, aux_classifier = aux_classifier.head, aux_classifier.classifier
-        if args.resume:
-            aux_classifier.load_state_dict(classifier_weights)
 
-    model_B1.train()
+    
     model_B2.train()
     model_B.train()
-    model_D1.train()
-    model_D2.train()
     head.train()
     classifier.train()
-    aux_classifier.train()
 
-    # cudnn.benchmark = True
     if gpu == 0:
-        logger.info(model_B1)
         logger.info(model_B2)
         logger.info(model_B)
-        logger.info(model_D1)
-        logger.info(model_D2)
         logger.info(head)
         logger.info(classifier)
-        logger.info(aux_classifier)
     else:
         logger = None
 
@@ -310,26 +297,17 @@ def main_worker(gpu, world_size, dist_url):
         logger.info("args.noaug: {}, args.resize: {}, args.rcrop: {}, args.hflip: {}, args.noshuffle: {}, args.no_droplast: {}".format(args.noaug, args.resize, args.rcrop, args.hflip, args.noshuffle, args.no_droplast))
     args.rcrop = [int(x.strip()) for x in args.rcrop.split(",")]
     args.clrjit_params = [float(x) for x in args.clrjit_params.split(',')]
- 
+
     datasets = create_dataset(args, logger)
+    sourceloader_iter = enumerate(datasets.source_train_loader)
+    targetloader_iter = enumerate(datasets.target_train_loader)
 
     # define optimizer
-    model_params = [{'params': list(model_B1.parameters()) + list(model_B2.parameters()) + list(model_B.parameters())},
-                    {'params': list(head.parameters()) + list(classifier.parameters()) + \
-                        list(aux_classifier.parameters()), 'lr': args.learning_rate * 10}]
+    model_params = [{'params': list(model_B2.parameters()) + list(model_B.parameters())},
+                    {'params': list(head.parameters()) + list(classifier.parameters()), 'lr': args.learning_rate * 10}]
     optimizer = optim.SGD(model_params, lr=args.learning_rate, momentum=args.momentum, weight_decay=args.weight_decay)
     assert len(optimizer.param_groups) == 2
     optimizer.zero_grad()
-
-    optimizer_D1 = optim.Adam(model_D1.parameters(), lr=args.learning_rate_D, betas=(0.9, 0.99))
-    optimizer_D1.zero_grad()
-
-    optimizer_D2 = optim.Adam(model_D2.parameters(), lr=args.learning_rate_D, betas=(0.9, 0.99))
-    optimizer_D2.zero_grad()
-
-    # define model
-    model_B1 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_B1)
-    model_B1 = torch.nn.parallel.DistributedDataParallel(model_B1.cuda(), device_ids=[gpu], find_unused_parameters=True)
 
     model_B2 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_B2)
     model_B2 = torch.nn.parallel.DistributedDataParallel(model_B2.cuda(), device_ids=[gpu], find_unused_parameters=True)
@@ -342,22 +320,6 @@ def main_worker(gpu, world_size, dist_url):
 
     classifier = torch.nn.SyncBatchNorm.convert_sync_batchnorm(classifier)
     classifier = torch.nn.parallel.DistributedDataParallel(classifier.cuda(), device_ids=[gpu], find_unused_parameters=True)
-
-    model_D1 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_D1)
-    model_D1 = torch.nn.parallel.DistributedDataParallel(model_D1.cuda(), device_ids=[gpu], find_unused_parameters=True)
-
-    model_D2 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_D2)
-    model_D2 = torch.nn.parallel.DistributedDataParallel(model_D2.cuda(), device_ids=[gpu], find_unused_parameters=True)
-
-    aux_classifier = torch.nn.SyncBatchNorm.convert_sync_batchnorm(aux_classifier)
-    aux_classifier = torch.nn.parallel.DistributedDataParallel(aux_classifier.cuda(), device_ids=[gpu], find_unused_parameters=True)
-
-    if args.gan == 'Vanilla':
-        bce_loss = torch.nn.BCEWithLogitsLoss()
-    elif args.gan == 'LS':
-        bce_loss = torch.nn.MSELoss()
-        if gpu == 0:
-            logger.info("use LS-GAN")
     seg_loss = torch.nn.CrossEntropyLoss(ignore_index=args.ignore_label)
 
     interp = nn.Upsample(size=(args.rcrop[1], args.rcrop[0]), mode='bilinear', align_corners=True)
@@ -377,15 +339,16 @@ def main_worker(gpu, world_size, dist_url):
     # validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger if gpu == 0 else None, datasets.target_valid_loader)
     # exit()
 
-    trainloader_iter = enumerate(datasets.source_train_loader)
-    targetloader_iter = enumerate(datasets.target_train_loader)
-
-    conf_bank = {i: [] for i in range(args.num_classes)}
-    thresholds = torch.zeros(args.num_classes).float().cuda()
+    thresholds = np.load(args.thresholds_path)
     class_list = ["road","sidewalk","building","wall",
                     "fence","pole","traffic_light","traffic_sign","vegetation",
                     "terrain","sky","person","rider","car",
                     "truck","bus","train","motorcycle","bicycle"]
+    if gpu == 0:
+        logger.info('successfully load class-wise thresholds from {}'.format(args.thresholds_path))
+        for c in range(len(class_list)):
+            logger.info("class {}: {}, threshold: {}".format(c, class_list[c], thresholds[c]))
+    thresholds = torch.from_numpy(thresholds).cuda()
 
     scaler = torch.cuda.amp.GradScaler()
     best_miou = 0.0
@@ -393,72 +356,47 @@ def main_worker(gpu, world_size, dist_url):
     epoch_s, epoch_t = 0, 0
     for i_iter in range(args.num_steps):
 
-        # model.train()
-        model_B1.train()
         model_B2.train()
         model_B.train()
-        model_D1.train()
-        model_D2.train()
         head.train()
         classifier.train()
-        aux_classifier.train()
 
         loss_seg_value = 0
-        loss_adv_src_value = 0
-        loss_adv_tgt_value = 0
-        loss_D1_value = 0
-        loss_D2_value = 0
-        loss_st_value = 0
+        loss_src_seg_value = 0
 
         optimizer.zero_grad()
         adjust_learning_rate(optimizer, i_iter)
-        optimizer_D1.zero_grad()
-        adjust_learning_rate_D(optimizer_D1, i_iter)
-        optimizer_D2.zero_grad()
-        adjust_learning_rate_D(optimizer_D2, i_iter)
 
         for sub_i in range(args.iter_size):
 
-            # train G
-            for param in model_D1.parameters():
-                param.requires_grad = False
-            for param in model_D2.parameters():
-                param.requires_grad = False
-
             # train with source
             try:
-                _, batch = trainloader_iter.__next__()
+                _, batch = sourceloader_iter.__next__()
             except StopIteration:
                 epoch_s += 1
                 datasets.source_train_sampler.set_epoch(epoch_s)
-                trainloader_iter = enumerate(datasets.source_train_loader)
-                _, batch = trainloader_iter.__next__()
+                sourceloader_iter = enumerate(datasets.source_train_loader)
+                _, batch = sourceloader_iter.__next__()
                 
             images = batch['img'].cuda()
             labels = batch['label'].cuda()
-
             src_size = images.shape[-2:]
-            with torch.cuda.amp.autocast():
-                feat_src = model_B1(images)
 
+            with torch.cuda.amp.autocast():
+
+                feat_src = model_B2(images)
                 feat_B_src = model_B(feat_src)
                 pred = classifier(head(feat_B_src))
                 pred = interp(pred) #[b, num_classes, h, w]
 
-                temperature = 1.8
-                pred = pred.div(temperature)
                 loss_seg = seg_loss(pred, labels)
                 
-                D_out = model_D1(F.interpolate(feat_src, size=src_size, mode='bilinear', align_corners=True))
-
-                loss_adv_src = args.lambda_adv_src * bce_loss(D_out, torch.FloatTensor(D_out.data.size()).fill_(target_label).cuda())
-                loss = loss_seg + loss_adv_src
+                loss = loss_seg
 
                 # proper normalization
-                loss = loss / args.iter_size
-                loss_seg_value += loss_seg / args.iter_size
-                loss_adv_src_value += loss_adv_src / args.iter_size
-
+                loss = args.src_loss_weight * loss / args.iter_size
+                loss_src_seg_value += loss_seg / args.iter_size
+                
             scaler.scale(loss).backward()
 
             # train with target
@@ -471,129 +409,81 @@ def main_worker(gpu, world_size, dist_url):
                 _, batch = targetloader_iter.__next__()
                 
             images = batch['img'].cuda()
-
+            soft_labels = batch['lpsoft'].cuda()
             tgt_size = images.shape[-2:]
+
+            with torch.no_grad():
+
+                
+                soft_labels = F.softmax(soft_labels, 1)
+
+                
+                images_full = batch['img_full'].cuda()
+                weak_params = batch['weak_params']
+                resize_params = weak_params['RandomSized']
+                crop_params = weak_params['RandomCrop']
+                flip_params = weak_params['RandomHorizontallyFlip']
+                # print("resize_params: ", resize_params)
+                # print("crop_params: ", crop_params)
+                # print("flip_params: ", flip_params)
+                with torch.cuda.amp.autocast():
+                    with torch.no_grad():
+                        pred_full = F.softmax(interp(classifier(head(model_B(model_B2(images_full))))), 1)
+                        
+                        # print("v1 pred_full.min(): {}, pred_full.max(): {}, pred_full.mean(): {}".format(pred_full.min(), pred_full.max(), pred_full.mean()))
+
+                        pred_labels = []
+                        for b in range(pred_full.shape[0]):
+                            # restore pred_full to crop
+                            # 1.Resize
+                            h, w = resize_params[0][b], resize_params[1][b]
+                            pred_resize_b = F.interpolate(pred_full[b].unsqueeze(0), size=(h, w), mode='bilinear', align_corners=True)[0]
+                            # 2.Crop
+                            ys, ye, xs, xe = crop_params[0][b], crop_params[1][b], crop_params[2][b], crop_params[3][b]
+                            pred_crop_b = pred_resize_b[:, ys:ye, xs:xe]
+                            # 3.Flip
+                            if flip_params[b]:
+                                pred_crop_b = torch.flip(pred_crop_b, dims=(2,)) #[c, h, w]
+                            pred_labels.append(pred_crop_b)
+                        pred_labels = torch.stack(pred_labels, 0)
+                        assert pred_labels.shape[-2:] == tgt_size
+                pseudo_labels = (pred_labels + soft_labels) / 2.0
+
+
             with torch.cuda.amp.autocast():
                 feat_tgt = model_B2(images)
                 feat_B_tgt = model_B(feat_tgt)
+                pred = classifier(head(feat_B_tgt))
+                pred = interp(pred) #[b, num_classes, h, w]
 
-                feat_B_tgt_head = head(feat_B_tgt)
-                pred_tgt = classifier(feat_B_tgt_head)
+                conf, pseudo_labels = pseudo_labels.max(1) #[b, h, w]
 
-                with torch.no_grad():
-                    pred_logits, pred_idx = F.softmax(pred_tgt.detach(), 1).max(1) #[b, h, w]
-                    assert pred_logits.shape[-2:] == pred_tgt.shape[-2:]
-
-                    # update_thresholds
-                    for c in range(args.num_classes):
-                        prob_c = pred_logits[pred_idx == c].cpu().numpy().tolist()
-                        if len(prob_c) == 0:
-                            continue
-                        conf_bank[c].extend(prob_c)
-                        rank = int(len(conf_bank[c]) * args.conf_p)
-                        thresholds[c] = sorted(conf_bank[c], reverse=True)[rank]
-                        if len(conf_bank[c]) > args.conf_bank_length:
-                            conf_bank[c] = conf_bank[c][-args.conf_bank_length:]
-                    
-                    n = torch.tensor(1.0).cuda()
-                    dist.all_reduce(thresholds)
-                    dist.all_reduce(n)
-                    thresholds = thresholds / n
-                    
-                    if i_iter % 500 == 0 and gpu == 0:
-                        for c in range(args.num_classes):
-                            print("c: {}, class_i: {} threshold: {}, len(conf_bank[c]): {}".format(c, class_list[c], thresholds[c], len(conf_bank[c])))
-                    
-                    # if i_iter % 100 == 0 and gpu == 0:
-                    #     num_pos = (pred_logits > thresholds[pred_idx]).float().sum()
-                    #     num_all = np.prod(pred_logits.shape)
-                    #     ratio = num_pos / (num_all+1e-8)
-                    #     logger.info("num_pos: {}, num_all: {}, ratio: {}".format(num_pos, num_all, ratio))
-
-                    pred_idx[pred_logits < thresholds[pred_idx]] = args.ignore_label
-
-                pred_tgt = interp_target(pred_tgt)
-                pred_tgt = pred_tgt.div(temperature)
-
-                pred_tgt_aux = aux_classifier(feat_B_tgt_head)
-                loss_st = args.lambda_st * seg_loss(pred_tgt_aux, pred_idx)
-
-                D_out = model_D2(F.softmax(pred_tgt, 1))
-
-                loss_adv_tgt = args.lambda_adv_tgt * bce_loss(D_out, torch.FloatTensor(D_out.data.size()).fill_(source_label).cuda())
-                loss = loss_adv_tgt + loss_st
-
-                loss = loss / args.iter_size
-                loss_adv_tgt_value += loss_adv_tgt / args.iter_size
-                loss_st_value += loss_st / args.iter_size
-
-            scaler.scale(loss).backward()
-
-            # train D
-            # bring back requires_grad
-            for param in model_D1.parameters():
-                param.requires_grad = True
-
-            optimizer_D1.zero_grad()
-            with torch.cuda.amp.autocast():
-                src_D1_pred = model_D1(F.interpolate(feat_src.detach(), size=src_size, mode='bilinear', align_corners=True))
-                loss_D1_src = 0.5 * bce_loss(src_D1_pred, torch.FloatTensor(src_D1_pred.data.size()).fill_(source_label).cuda()) / args.iter_size
-            
-            scaler.scale(loss_D1_src).backward()
-
-            with torch.cuda.amp.autocast():
-            
-                tgt_D1_pred = model_D1(F.interpolate(feat_tgt.detach(), size=tgt_size, mode='bilinear', align_corners=True))
-                loss_D1_tgt = 0.5 * bce_loss(tgt_D1_pred, torch.FloatTensor(tgt_D1_pred.data.size()).fill_(target_label).cuda()) / args.iter_size
-
-                loss_D1_value += loss_D1_src + loss_D1_tgt
-
-            scaler.scale(loss_D1_tgt).backward()
-
-            for param in model_D2.parameters():
-                param.requires_grad = True
-            optimizer_D2.zero_grad()
-
-            with torch.cuda.amp.autocast():
-                src_D2_pred = model_D2(F.softmax(pred.detach(), 1))
-                loss_D2_src = 0.5 * bce_loss(src_D2_pred, torch.FloatTensor(src_D2_pred.data.size()).fill_(source_label).cuda()) / args.iter_size
-
-            scaler.scale(loss_D2_src).backward()
-
-            with torch.cuda.amp.autocast():
-                    
-                tgt_D2_pred = model_D2(F.softmax(pred_tgt.detach(), 1))
-                loss_D2_tgt = 0.5 * bce_loss(tgt_D2_pred, torch.FloatTensor(tgt_D2_pred.data.size()).fill_(target_label).cuda()) / args.iter_size
+                pseudo_labels[conf < thresholds[pseudo_labels]] = args.ignore_label
+                pseudo_labels = pseudo_labels.detach()
+                loss_seg = seg_loss(pred, pseudo_labels)
                 
-                loss_D2_value += loss_D2_src + loss_D2_tgt
+                loss = loss_seg
 
-            scaler.scale(loss_D2_tgt).backward()
+                # proper normalization
+                loss = loss / args.iter_size
+                loss_seg_value += loss_seg / args.iter_size
+                
+            scaler.scale(loss).backward()
 
         n = torch.tensor(1.0).cuda()
 
-        dist.all_reduce(n), dist.all_reduce(loss_seg_value), dist.all_reduce(loss_adv_src_value), dist.all_reduce(loss_adv_tgt_value)
-        dist.all_reduce(loss_D1_value), dist.all_reduce(loss_D2_value), dist.all_reduce(loss_st_value)
+        dist.all_reduce(n), dist.all_reduce(loss_seg_value),  dist.all_reduce(loss_src_seg_value)
         
         loss_seg_value = loss_seg_value.item() / n.item()
-        loss_adv_src_value = loss_adv_src_value.item() / n.item()
-        loss_adv_tgt_value = loss_adv_tgt_value.item() / n.item()
-        loss_D1_value = loss_D1_value.item() / n.item()
-        loss_D2_value = loss_D2_value.item() / n.item()
-        loss_st_value = loss_st_value.item() / n.item()
-
+        loss_src_seg_value = loss_src_seg_value.item() / n.item()
+        
         scaler.step(optimizer)
-        scaler.step(optimizer_D1)
-        scaler.step(optimizer_D2)
         scaler.update()
-
+        
         if args.tensorboard and gpu == 0:
             scalar_info = {
                 'loss_seg': loss_seg_value,
-                'loss_adv_src': loss_adv_src_value,
-                'loss_adv_tgt': loss_adv_tgt_value,
-                'loss_D1': loss_D1_value,
-                'loss_D2': loss_D2_value,
-                "loss_st": loss_st_value,
+                'loss_src_seg': loss_src_seg_value,
             }
 
             if i_iter % 10 == 0:
@@ -601,15 +491,13 @@ def main_worker(gpu, world_size, dist_url):
                     writer.add_scalar(key, val, i_iter)
 
         if gpu == 0 and i_iter % args.print_every == 0:
-            logger.info('iter = {0:8d}/{1:8d}, loss_seg = {2:.3f}, loss_adv_src = {3:.5f}, loss_adv_tgt = {4:.5f}, loss_D1 = {5:.3f}, '
-                'loss_D2 = {6:.3f}, loss_st = {7:.5f}, epoch_s = {8:3d}, epoch_t = {9:3d}'.format(i_iter, args.num_steps, loss_seg_value, loss_adv_src_value, \
-                loss_adv_tgt_value, loss_D1_value, loss_D2_value, loss_st_value, epoch_s, epoch_t))
+            logger.info('iter = {0:8d}/{1:8d}, loss_seg = {2:.3f}, loss_src_seg = {3:.3f}'.format(i_iter, args.num_steps, loss_seg_value, loss_src_seg_value))
         
         if gpu == 0 and i_iter >= args.num_steps_stop - 1:
             logger.info('save model ...')
             filename = osp.join(args.snapshot_dir, 'GTA5_' + str(args.num_steps_stop) + '.pth')
-            save_file = {'model_B1_state_dict': model_B1.state_dict(), 'model_B2_state_dict': model_B2.state_dict(), \
-                    'model_B_state_dict': model_B.state_dict(), 'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
+            save_file = {'model_B2_state_dict': model_B2.state_dict(), 'model_B_state_dict': model_B.state_dict(), \
+                'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
             torch.save(save_file, filename)
             logger.info("saving checkpoint model to {}".format(filename))
             break
@@ -630,8 +518,8 @@ def main_worker(gpu, world_size, dist_url):
                 if filename is not None and os.path.exists(filename):
                     os.remove(filename)
                 filename = osp.join(args.snapshot_dir, 'GTA5_' + str(i_iter) + "_{}".format(miou) + '.pth')
-                save_file = {'model_B1_state_dict': model_B1.state_dict(), 'model_B2_state_dict': model_B2.state_dict(), \
-                        'model_B_state_dict': model_B.state_dict(), 'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
+                save_file = {'model_B2_state_dict': model_B2.state_dict(), 'model_B_state_dict': model_B.state_dict(), \
+                    'head_state_dict': head.state_dict(), 'classifier_state_dict': classifier.state_dict()}
                 torch.save(save_file, filename)
                 logger.info("saving checkpoint model to {}".format(filename))
                 
@@ -653,9 +541,9 @@ def validate(model_B2, model_B, head, classifier, seg_loss, gpu, logger, testloa
 
     with torch.no_grad():
         for i, batch in enumerate(testloader):
-            images = batch['img'].cuda()
-            labels = batch['label'].cuda()
-            
+            images = batch["img"].cuda()
+            labels = batch["label"].cuda()
+
             pred = model_B(model_B2(images))
             pred = classifier(head(pred))
             output = F.interpolate(pred, size=labels.size()[-2:], mode='bilinear', align_corners=True)
