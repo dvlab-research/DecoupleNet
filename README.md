@@ -79,9 +79,11 @@ If you find this project useful, please consider citing:
 
 ```
 @inproceedings{lai2022decouplenet,
-  title     = {DecoupleNet: Decoupled Network for Domain Adaptive Semantic Segmentation},
-  author    = {Xin Lai, Zhuotao Tian, Xiaogang Xu, Yingcong Chen, Shu Liu, Hengshuang Zhao, Liwei Wang, Jiaya Jia},
-  booktitle = {ECCV},
-  year      = {2022}
+  title={Decouplenet: Decoupled network for domain adaptive semantic segmentation},
+  author={Lai, Xin and Tian, Zhuotao and Xu, Xiaogang and Chen, Yingcong and Liu, Shu and Zhao, Hengshuang and Wang, Liwei and Jia, Jiaya},
+  booktitle={European Conference on Computer Vision},
+  pages={369--387},
+  year={2022},
+  organization={Springer}
 }
 ```
